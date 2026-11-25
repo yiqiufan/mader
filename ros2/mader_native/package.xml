@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mader_native</name>
+  <version>0.0.0</version>
+  <description>MADER NLopt trajectory planner for ROS 2 Humble</description>
+  <maintainer email="maintainers@aerohub.invalid">AeroHub maintainers</maintainer>
+  <license>BSD-3-Clause</license>
+  <url type="repository">https://github.com/yiqiufan/mader</url>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>geometry_msgs</depend>
+  <depend>mader_msgs</depend>
+  <depend>mader_handoff_interfaces</depend>
+  <depend>rclcpp</depend>
+  <depend>snapstack_msgs</depend>
+  <depend>tf2</depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -18,6 +18,7 @@
 #include "visualization_msgs/Marker.h"
 #include "visualization_msgs/MarkerArray.h"
 #include "mader_types.hpp"
+#include "planner_math.hpp"
 #include <deque>
 
 #include <mader_msgs/PieceWisePolTraj.h>
@@ -51,13 +52,6 @@ bool safeGetParam(ros::NodeHandle& nh, std::string const& param_name, T& param_v
   return true;
 }
 
-double getMinTimeDoubleIntegrator1D(const double& p0, const double& v0, const double& pf, const double& vf,
-                                    const double& v_max, const double& a_max);
-
-double getMinTimeDoubleIntegrator3D(const Eigen::Vector3d& p0, const Eigen::Vector3d& v0, const Eigen::Vector3d& pf,
-                                    const Eigen::Vector3d& vf, const Eigen::Vector3d& v_max,
-                                    const Eigen::Vector3d& a_max);
-
 visualization_msgs::MarkerArray pwp2ColoredMarkerArray(mt::PieceWisePol& pwp, double t_init, double t_final,
                                                        int samples, std::string ns);
 
@@ -73,10 +67,6 @@ visualization_msgs::Marker edges2Marker(const mt::Edges& edges, std_msgs::ColorR
 
 geometry_msgs::Pose identityGeometryMsgsPose();
 
-mt::PieceWisePol composePieceWisePol(const double t, const double dc, mt::PieceWisePol& p1, mt::PieceWisePol& p2);
-
-bool boxIntersectsSphere(Eigen::Vector3d center, double r, Eigen::Vector3d c1, Eigen::Vector3d c2);
-
 std::vector<std::string> pieceWisePol2String(const mt::PieceWisePol& piecewisepol);
 
 std_msgs::ColorRGBA getColorJet(double v, double vmin, double vmax);
@@ -89,15 +79,7 @@ void quaternion2Euler(Eigen::Quaterniond q, double& roll, double& pitch, double&
 
 void quaternion2Euler(geometry_msgs::Quaternion q, double& roll, double& pitch, double& yaw);
 
-void saturate(int& var, const int min, const int max);
-
-void saturate(double& var, const double min, const double max);
-
-void saturate(Eigen::Vector3d& tmp, const Eigen::Vector3d& min, const Eigen::Vector3d& max);
-
 visualization_msgs::Marker getMarkerSphere(double scale, int my_color);
-
-void angle_wrap(double& diff);
 
 geometry_msgs::Point pointOrigin();
 
@@ -110,13 +92,6 @@ geometry_msgs::Point eigen2point(Eigen::Vector3d vector);
 geometry_msgs::Vector3 vectorNull();
 
 geometry_msgs::Vector3 vectorUniform(double a);
-
-// sign function
-template <typename T>
-int sgn(T val)
-{
-  return (T(0) < val) - (val < T(0));
-}
 
 // given 2 points (A inside and B outside the sphere) it computes the intersection of the lines between
 // that 2 points and the sphere

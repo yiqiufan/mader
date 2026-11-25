@@ -1,4 +1,4 @@
-Header header
+std_msgs/Header header
 uint8 value
 
 uint8 OTHER   = 0

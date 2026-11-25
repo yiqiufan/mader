@@ -13,8 +13,8 @@
 #include <iomanip>  //set precision
 #include <nlopt.hpp>
 #include "mader_types.hpp"
-#include "utils.hpp"
-#include "timer.hpp"
+#include "mader_math.hpp"
+#include "elapsed_timer.hpp"
 #include <decomp_geometry/polyhedron.h>  //For Polyhedron  and Hyperplane definition
 #include "separator.hpp"
 #include "octopus_search.hpp"

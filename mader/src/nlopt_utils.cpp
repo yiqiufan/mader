@@ -16,7 +16,7 @@
 
 #include <Eigen/Dense>
 #include <random>
-#include "timer.hpp"
+#include "elapsed_timer.hpp"
 
 #include "solver_nlopt.hpp"
 #include "nlopt_utils.hpp"

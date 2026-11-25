@@ -13,6 +13,8 @@
 #include <vector>
 #include "cgal_utils.hpp"
 
+#include <atomic>
+#include <functional>
 #include <mutex>
 
 #include "mader_types.hpp"
@@ -45,9 +47,14 @@ using namespace termcolor;
 class Mader
 {
 public:
-  Mader(mt::parameters par);
+  using Clock = std::function<double()>;
+  using PeerUse = std::function<void(const char*, const mt::dynTrajCompiled&, double)>;
+
+  Mader(mt::parameters par, Clock now, PeerUse peer_use = {});
   bool replan(mt::Edges& edges_obstacles_out, std::vector<mt::state>& X_safe_out, std::vector<Hyperplane3D>& planes,
               int& num_of_LPs_run, int& num_of_QCQPs_run, mt::PieceWisePol& pwp_out);
+  // Produce a candidate from an externally owned execution boundary.
+  bool propose(const mt::state& initial, const mt::state& target, double start, mt::PieceWisePol& candidate);
   void updateState(mt::state data);
 
   bool getNextGoal(mt::state& next_goal);
@@ -57,9 +64,13 @@ public:
   void resetInitialization();
 
   bool IsTranslating();
-  void updateTrajObstacles(mt::dynTraj traj);
+  void updateTrajObstacles(mt::dynTraj traj, const Eigen::Vector3d* handoff_position = nullptr);
 
 private:
+  bool solveBoundary(const mt::state& A, const mt::state& G_term, double t_start, double runtime_snlopt,
+                     mt::Edges& edges, std::vector<Hyperplane3D>& planes, int& num_lp, int& num_qp,
+                     mt::PieceWisePol& candidate, MyTimer& timer);
+
   mt::state M_;
   mt::committedTrajectory plan_;
 
@@ -104,20 +115,22 @@ private:
   void printDroneStatus();
 
   mt::parameters par_;
+  const Clock now_;
+  const PeerUse peer_use_;
 
   double t_;  // variable where the expressions of the trajs of the dyn obs are evaluated
 
   std::mutex mtx_trajs_;
   std::vector<mt::dynTrajCompiled> trajs_;
 
-  bool state_initialized_ = false;
-  bool planner_initialized_ = false;
+  std::atomic<bool> state_initialized_{false};
+  std::atomic<bool> planner_initialized_{false};
 
   int deltaT_ = 75;
 
-  bool terminal_goal_initialized_ = false;
+  std::atomic<bool> terminal_goal_initialized_{false};
 
-  int drone_status_ = DroneStatus::TRAVELING;  // status_ can be TRAVELING, GOAL_SEEN, GOAL_REACHED
+  std::atomic<int> drone_status_{DroneStatus::TRAVELING};  // status_ can be TRAVELING, GOAL_SEEN, GOAL_REACHED
   int planner_status_ = PlannerStatus::FIRST_PLAN;
 
   double dyaw_filtered_ = 0;
@@ -150,9 +163,9 @@ private:
 
   bool exists_previous_pwp_ = false;
 
-  bool started_check_ = false;
+  std::atomic<bool> started_check_{false};
 
-  bool have_received_trajectories_while_checking_ = false;
+  std::atomic<bool> have_received_trajectories_while_checking_{false};
 
   double time_init_opt_;
 

@@ -14,7 +14,9 @@
 #include <stdlib.h>
 
 #include "mader.hpp"
-#include "timer.hpp"
+#include "elapsed_timer.hpp"
+#include "planner_math.hpp"
+#include <utility>
 #include "termcolor.hpp"
 
 #if USE_GUROBI_FLAG
@@ -29,7 +31,8 @@ using namespace termcolor;
 // typedef ROSWallTimer MyTimer;
 typedef MADER_timers::Timer MyTimer;
 
-Mader::Mader(mt::parameters par) : par_(par)
+Mader::Mader(mt::parameters par, Clock now, PeerUse peer_use)
+  : par_(par), now_(std::move(now)), peer_use_(std::move(peer_use))
 {
   drone_status_ == DroneStatus::YAWING;
   G_.pos << 0, 0, 0;
@@ -154,7 +157,8 @@ void Mader::dynTraj2dynTrajCompiled(const mt::dynTraj& traj, mt::dynTrajCompiled
 
   traj_compiled.bbox = traj.bbox;
   traj_compiled.id = traj.id;
-  traj_compiled.time_received = traj.time_received;  // ros::Time::now().toSec();
+  traj_compiled.is_agent = traj.is_agent;
+  traj_compiled.time_received = traj.time_received;  // now_();
 
   traj_compiled.is_static =
       ((traj.is_agent == false) &&                           // is an obstacle and
@@ -167,7 +171,7 @@ void Mader::dynTraj2dynTrajCompiled(const mt::dynTraj& traj, mt::dynTrajCompiled
   traj_compiled.pwp = traj.pwp;
 }
 // Note that we need to compile the trajectories inside mader.cpp because t_ is in mader.hpp
-void Mader::updateTrajObstacles(mt::dynTraj traj)
+void Mader::updateTrajObstacles(mt::dynTraj traj, const Eigen::Vector3d* handoff_position)
 {
   MyTimer tmp_t(true);
 
@@ -201,23 +205,27 @@ void Mader::updateTrajObstacles(mt::dynTraj traj)
   // Note that these positions are obtained with the trajectory stored in the past in the local map
   std::vector<int> ids_to_remove;
 
-  for (int index_traj = 0; index_traj < trajs_.size(); index_traj++)
+  const Eigen::Vector3d& local_position = handoff_position ? *handoff_position : state_.pos;
+  for (auto& stored : trajs_)
   {
-    bool traj_affects_me = false;
-
     mtx_t_.lock();
-    t_ = ros::Time::now().toSec();
+    t_ = now_();
 
     Eigen::Vector3d center_obs;
-    center_obs << trajs_[index_traj].function[0].value(),  ////////////////////
-        trajs_[index_traj].function[1].value(),            ////////////////
-        trajs_[index_traj].function[2].value();            /////////////////
+    if (handoff_position && stored.is_agent)
+    {
+      // Handoff peer messages carry their positions in the polynomial.
+      center_obs = stored.pwp.eval(t_);
+    }
+    else
+    {
+      center_obs << stored.function[0].value(), stored.function[1].value(), stored.function[2].value();
+    }
 
     mtx_t_.unlock();
 
-    // mtx_t_.unlock();
-    if (((traj_compiled.is_static == true) && (center_obs - state_.pos).norm() > 2 * par_.Ra) ||  ////
-        ((traj_compiled.is_static == false) && (center_obs - state_.pos).norm() > 4 * par_.Ra))
+    const bool is_static = handoff_position ? stored.is_static : traj_compiled.is_static;
+    if ((center_obs - local_position).norm() > (is_static ? 2 : 4) * par_.Ra)
     // #### Static Obstacle: 2*Ra because: traj_{k-1} is inside a sphere of Ra.
     // Then, in iteration k the point A (which I don't
     // know yet)  is taken along that trajectory, and
@@ -234,7 +242,7 @@ void Mader::updateTrajObstacles(mt::dynTraj traj)
     // on take care of deleting the ones I don't need once
     // I know A
     {
-      ids_to_remove.push_back(trajs_[index_traj].id);
+      ids_to_remove.push_back(stored.id);
     }
   }
 
@@ -496,6 +504,8 @@ ConvexHullsOfCurves Mader::convexHullsOfCurves(double t_start, double t_end)
   for (auto traj : trajs_)
   {
     result.push_back(convexHullsOfCurve(traj, t_start, t_end));
+    if (peer_use_ && traj.is_agent)
+      peer_use_("optimizer_input", traj, time_init_opt_);
   }
 
   return result;
@@ -638,9 +648,11 @@ bool Mader::safetyCheckAfterOpt(mt::PieceWisePol pwp_optimized)
   {
     if (traj.time_received > time_init_opt_ && traj.is_agent == true)
     {
+      if (peer_use_)
+        peer_use_("post_solve_check", traj, time_init_opt_);
       if (trajsAndPwpAreInCollision(traj, pwp_optimized, pwp_optimized.times.front(), pwp_optimized.times.back()))
       {
-        ROS_ERROR_STREAM("Traj collides with " << traj.id);
+        std::cerr << "Traj collides with " << traj.id << std::endl;
         result = false;  // will have to redo the optimization
         break;
       }
@@ -650,7 +662,7 @@ bool Mader::safetyCheckAfterOpt(mt::PieceWisePol pwp_optimized)
   // and now do another check in case I've received anything while I was checking. Note that mtx_trajs_ is locked!
   if (have_received_trajectories_while_checking_ == true)
   {
-    ROS_ERROR_STREAM("Recvd traj while checking ");
+    std::cerr << "Recvd traj while checking" << std::endl;
     result = false;
   }
   started_check_ = false;
@@ -765,111 +777,12 @@ bool Mader::replan(mt::Edges& edges_obstacles_out, std::vector<mt::state>& X_saf
 
   // std::cout << green << "Runtime snlopt= " << runtime_snlopt << reset << std::endl;
 
-  //////////////////////////////////////////////////////////////////////////
-  ///////////////////////// Get point G ////////////////////////////////////
-  //////////////////////////////////////////////////////////////////////////
-
-  double distA2TermGoal = (G_term.pos - A.pos).norm();
-  double ra = std::min((distA2TermGoal - 0.001), par_.Ra);  // radius of the sphere S
-  mt::state G;
-  G.pos = A.pos + ra * (G_term.pos - A.pos).normalized();
-
-  mt::state initial = A;
-  mt::state final = G;
-
-  mtx_G.lock();
-  G_ = G;
-  mtx_G.unlock();
-
-  //////////////////////////////////////////////////////////////////////////
-  ///////////////////////// Solve optimization! ////////////////////////////
-  //////////////////////////////////////////////////////////////////////////
-
-  solver_->setMaxRuntimeKappaAndMu(runtime_snlopt, par_.kappa, par_.mu);
-
-  //////////////////////
-  double time_now = ros::Time::now().toSec();  // TODO this ros dependency shouldn't be here
-
-  double t_start = k_index * par_.dc + time_now;
-
-  double factor_alloc = (distA2TermGoal > par_.dist_factor_alloc_close) ? par_.factor_alloc : par_.factor_alloc_close;
-
-  double time_allocated = factor_alloc * mu::getMinTimeDoubleIntegrator3D(initial.pos, initial.vel, final.pos,
-                                                                          final.vel, par_.v_max, par_.a_max);
-
-  std::cout << "time_allocated= " << time_allocated << std::endl;
-
-  double t_final = t_start + time_allocated;
-
-  bool correctInitialCond =
-      solver_->setInitStateFinalStateInitTFinalT(initial, final, t_start,
-                                                 t_final);  // note that here t_final may have been updated
-
-  if (correctInitialCond == false)
-  {
-    std::cout << bold << red << "The solver cannot guarantee feasibility for v1" << reset << std::endl;
-    return false;
-  }
-
-  ////////////////
-
-  mtx_trajs_.lock();
-
-  time_init_opt_ = ros::Time::now().toSec();
-  removeTrajsThatWillNotAffectMe(A, t_start, t_final);
-  ConvexHullsOfCurves hulls = convexHullsOfCurves(t_start, t_final);
-  mtx_trajs_.unlock();
-
-  mt::ConvexHullsOfCurves_Std hulls_std = cu::vectorGCALPol2vectorStdEigen(hulls);
-  // poly_safe_out = cu::vectorGCALPol2vectorJPSPol(hulls);
-  edges_obstacles_out = cu::vectorGCALPol2edges(hulls);
-
-  solver_->setHulls(hulls_std);
-
-  //////////////////////
-  std::cout << on_cyan << bold << "Solved so far" << solutions_found_ << "/" << total_replannings_ << reset
-            << std::endl;
-
-  std::cout << "[FA] Calling NL" << std::endl;
-
-  bool result = solver_->optimize();
-
-  num_of_LPs_run = solver_->getNumOfLPsRun();
-  num_of_QCQPs_run = solver_->getNumOfQCQPsRun();
-
-  total_replannings_++;
-  if (result == false)
-  {
-    int states_last_replan = ceil(replanCB_t.ElapsedMs() / (par_.dc * 1000));  // Number of states that
-                                                                               // would have been needed for
-                                                                               // the last replan
-    deltaT_ = std::max(par_.factor_alpha * states_last_replan, 1.0);
-    deltaT_ = std::min(1.0 * deltaT_, 2.0 / par_.dc);
-    return false;
-  }
-
-  solver_->getPlanes(planes);
-
-  solutions_found_++;
-
-  // av_improvement_nlopt_ = ((solutions_found_ - 1) * av_improvement_nlopt_ + solver_->improvement_) /
-  // solutions_found_;
-
-  // std::cout << blue << "Average improvement so far" << std::setprecision(5) << av_improvement_nlopt_ << reset
-  //          << std::endl;
-
+  const double time_now = now_();
+  const double t_start = k_index * par_.dc + time_now;
   mt::PieceWisePol pwp_now;
-  solver_->getSolution(pwp_now);
-
-  MyTimer check_t(true);
-  mtx_trajs_.lock();
-  bool is_safe_after_opt = safetyCheckAfterOpt(pwp_now);
-  mtx_trajs_.unlock();
-  // std::cout << bold << "Check Timer=" << check_t << std::endl;
-
-  if (is_safe_after_opt == false)
+  if (!solveBoundary(A, G_term, t_start, runtime_snlopt, edges_obstacles_out, planes, num_of_LPs_run,
+                     num_of_QCQPs_run, pwp_now, replanCB_t))
   {
-    ROS_ERROR_STREAM("safetyCheckAfterOpt is not satisfied, returning");
     return false;
   }
 
@@ -1090,4 +1003,130 @@ void Mader::printDroneStatus()
       std::cout << bold << "status_=GOAL_REACHED" << reset << std::endl;
       break;
   }
+}
+bool Mader::solveBoundary(const mt::state& A, const mt::state& G_term, double t_start, double runtime_snlopt,
+                     mt::Edges& edges_obstacles_out, std::vector<Hyperplane3D>& planes, int& num_of_LPs_run, int& num_of_QCQPs_run,
+                     mt::PieceWisePol& pwp_now, MyTimer& replanCB_t)
+{
+  //////////////////////////////////////////////////////////////////////////
+  ///////////////////////// Get point G ////////////////////////////////////
+  //////////////////////////////////////////////////////////////////////////
+
+  double distA2TermGoal = (G_term.pos - A.pos).norm();
+  double ra = std::min((distA2TermGoal - 0.001), par_.Ra);  // radius of the sphere S
+  mt::state G;
+  G.pos = A.pos + ra * (G_term.pos - A.pos).normalized();
+
+  mt::state initial = A;
+  mt::state final = G;
+
+  mtx_G.lock();
+  G_ = G;
+  mtx_G.unlock();
+
+  //////////////////////////////////////////////////////////////////////////
+  ///////////////////////// Solve optimization! ////////////////////////////
+  //////////////////////////////////////////////////////////////////////////
+
+  solver_->setMaxRuntimeKappaAndMu(runtime_snlopt, par_.kappa, par_.mu);
+
+  double factor_alloc = (distA2TermGoal > par_.dist_factor_alloc_close) ? par_.factor_alloc : par_.factor_alloc_close;
+
+  double time_allocated = factor_alloc * mu::getMinTimeDoubleIntegrator3D(initial.pos, initial.vel, final.pos,
+                                                                          final.vel, par_.v_max, par_.a_max);
+
+  std::cout << "time_allocated= " << time_allocated << std::endl;
+
+  double t_final = t_start + time_allocated;
+
+  bool correctInitialCond =
+      solver_->setInitStateFinalStateInitTFinalT(initial, final, t_start,
+                                                 t_final);  // note that here t_final may have been updated
+
+  if (correctInitialCond == false)
+  {
+    std::cout << bold << red << "The solver cannot guarantee feasibility for v1" << reset << std::endl;
+    return false;
+  }
+
+  ////////////////
+
+  mtx_trajs_.lock();
+
+  time_init_opt_ = now_();
+  removeTrajsThatWillNotAffectMe(A, t_start, t_final);
+  ConvexHullsOfCurves hulls = convexHullsOfCurves(t_start, t_final);
+  mtx_trajs_.unlock();
+
+  mt::ConvexHullsOfCurves_Std hulls_std = cu::vectorGCALPol2vectorStdEigen(hulls);
+  // poly_safe_out = cu::vectorGCALPol2vectorJPSPol(hulls);
+  edges_obstacles_out = cu::vectorGCALPol2edges(hulls);
+
+  solver_->setHulls(hulls_std);
+
+  //////////////////////
+  std::cout << on_cyan << bold << "Solved so far" << solutions_found_ << "/" << total_replannings_ << reset
+            << std::endl;
+
+  std::cout << "[FA] Calling NL" << std::endl;
+
+  bool result = solver_->optimize();
+
+  num_of_LPs_run = solver_->getNumOfLPsRun();
+  num_of_QCQPs_run = solver_->getNumOfQCQPsRun();
+
+  total_replannings_++;
+  if (result == false)
+  {
+    int states_last_replan = ceil(replanCB_t.ElapsedMs() / (par_.dc * 1000));  // Number of states that
+                                                                               // would have been needed for
+                                                                               // the last replan
+    deltaT_ = std::max(par_.factor_alpha * states_last_replan, 1.0);
+    deltaT_ = std::min(1.0 * deltaT_, 2.0 / par_.dc);
+    return false;
+  }
+
+  solver_->getPlanes(planes);
+
+  solutions_found_++;
+
+  // av_improvement_nlopt_ = ((solutions_found_ - 1) * av_improvement_nlopt_ + solver_->improvement_) /
+  // solutions_found_;
+
+  // std::cout << blue << "Average improvement so far" << std::setprecision(5) << av_improvement_nlopt_ << reset
+  //          << std::endl;
+
+  solver_->getSolution(pwp_now);
+
+  MyTimer check_t(true);
+  mtx_trajs_.lock();
+  bool is_safe_after_opt = safetyCheckAfterOpt(pwp_now);
+  mtx_trajs_.unlock();
+  // std::cout << bold << "Check Timer=" << check_t << std::endl;
+
+  if (is_safe_after_opt == false)
+  {
+    std::cerr << "safetyCheckAfterOpt is not satisfied, returning" << std::endl;
+    return false;
+  }
+
+  return true;
+}
+
+bool Mader::propose(const mt::state& initial, const mt::state& target, double start,
+                    mt::PieceWisePol& candidate)
+{
+  const double remaining = start - now_();
+  if (!std::isfinite(start) || remaining <= 0 ||
+      (target.pos - initial.pos).norm() < par_.goal_radius)
+  {
+    return false;
+  }
+  double runtime = remaining;
+  mu::saturate(runtime, par_.lower_bound_runtime_snlopt, par_.upper_bound_runtime_snlopt);
+  MyTimer timer(true);
+  mt::Edges edges;
+  std::vector<Hyperplane3D> planes;
+  int num_lp = 0, num_qp = 0;
+  return solveBoundary(initial, target, start, runtime, edges, planes, num_lp, num_qp, candidate, timer);
 }

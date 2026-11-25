@@ -1,4 +1,4 @@
-Header header
+std_msgs/Header header
 string[] function #Theis field is only used by the obstacles (i.e. when is_agent==false)
 float32[] bbox             #bounding box. It has three elements: hx, hy, hz (bbox of size hx x hy x hz)
 geometry_msgs/Vector3 pos  #current position (x,y,z)

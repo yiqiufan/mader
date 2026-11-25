@@ -7,13 +7,11 @@
  * -------------------------------------------------------------------------- */
 #include <vector>
 #include <random>
-#include "ros/ros.h"
 
-#include "timer.hpp"
+#include "elapsed_timer.hpp"
 #include "termcolor.hpp"
 #include "octopus_search.hpp"
 #include "bspline_utils.hpp"
-#include "utils.hpp"
 using namespace termcolor;
 
 typedef MADER_timers::Timer MyTimer;
@@ -1313,4 +1311,38 @@ exitloop:
   }
 
   return isFeasible;
+}
+bool OctopusSearch::chooseFeasibleAlternative(std::vector<Eigen::Vector3d>& q, std::vector<Eigen::Vector3d>& n,
+                                             std::vector<double>& d, const CandidateCheck& accept,
+                                             std::chrono::steady_clock::time_point deadline)
+{
+  using Clock = std::chrono::steady_clock;
+  auto original = std::move(result_);
+  auto closest = std::numeric_limits<double>::max();
+  bool found = false;
+  std::vector<Eigen::Vector3d> normals;
+  std::vector<double> offsets;
+  for (auto& node : expanded_valid_nodes_)
+  {
+    if (Clock::now() >= deadline)
+      break;
+    if (node.index != N_ - 2)
+      continue;
+    const double distance = (node.qi - goal_).norm();
+    // Reuse the original complete-path ordering and tie allowance.
+    if (!(distance < std::max(0.0, closest - 1e-4)))
+      continue;
+    recoverPath(&node);
+    if (checkFeasAndFillND(result_, normals, offsets) && accept(result_, normals, offsets)
+        && Clock::now() < deadline)
+    {
+      closest = distance;
+      q = result_;
+      n = normals;
+      d = offsets;
+      found = true;
+    }
+  }
+  result_ = found ? q : std::move(original);
+  return found;
 }

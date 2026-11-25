@@ -23,6 +23,40 @@ When using MADER, please cite [MADER: Trajectory Planner in Multi-Agent and Dyna
 }
 ```
 
+## ROS 2 Humble for AeroHub
+
+The AeroHub migration branch is based on upstream commit
+`5e9fdf1583ce4e9fcd9b138cf50fa9c059249c97`. It builds the NLopt planner with ament
+and uses the Git submodule commits recorded by the parent checkout.
+
+Initialize the submodules and source the AeroHub Humble build environment.
+The build uses Eigen3, NLopt 2.7.1, CGAL 4.14.2, GLPK 4.65, and the GMP
+and MPFR development dependencies required by CGAL. Set `CGAL_PREFIX`,
+`NLOPT_PREFIX`, and `GLPK_ROOT` to the corresponding installation prefixes
+in that environment.
+
+```bash
+git submodule update --init --recursive
+source /opt/ros/humble/setup.bash
+colcon build \
+  --base-paths mader_msgs ros2/mader_handoff_interfaces \
+    ros2/mader_native submodules/snapstack_msgs \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    "-DCMAKE_PREFIX_PATH=${CGAL_PREFIX};${NLOPT_PREFIX}" "-DGLPK_ROOT=${GLPK_ROOT}"
+```
+
+If GMP or MPFR are provided through an external dependency prefix, pass
+their include and library paths with the corresponding CMake options.
+
+`mader_native` installs `mader_handoff_node`. In `explicit_handoff`
+mode the node provides the private `ProposeTrajectory` service to the
+AeroHub adapter, which owns the trajectory handoff to the execution layer.
+For a standalone ground demo, source the generated install setup and use
+`ros2 launch mader_native vehicle.launch.py with_tracker:=true`.
+
+The **General Setup** below describes the upstream ROS 1 workflow. Use
+the upstream baseline checkout for that workflow.
+
 ## General Setup
 
 ### Not Using Docker

@@ -17,6 +17,8 @@
 #include "separator.hpp"
 #include "cgal_utils.hpp"
 
+#include <chrono>
+#include <functional>
 #include <unordered_map>
 #include <queue>
 #include <tuple>
@@ -77,6 +79,12 @@ public:
   void setBias(double bias);
 
   bool run(std::vector<Eigen::Vector3d>& result, std::vector<Eigen::Vector3d>& n, std::vector<double>& d);
+  using CandidateCheck = std::function<bool(const std::vector<Eigen::Vector3d>&,
+                                            const std::vector<Eigen::Vector3d>&,
+                                            const std::vector<double>&)>;
+  bool chooseFeasibleAlternative(std::vector<Eigen::Vector3d>& q, std::vector<Eigen::Vector3d>& n,
+                                 std::vector<double>& d, const CandidateCheck& accept,
+                                 std::chrono::steady_clock::time_point deadline);
 
   void recoverPath(Node* node1_ptr);
 

@@ -9,7 +9,6 @@
 #include "solver_nlopt.hpp"
 #include "termcolor.hpp"
 #include "bspline_utils.hpp"
-#include "ros/ros.h"
 
 #include <decomp_util/ellipsoid_decomp.h>  //For Polyhedron definition
 #include <unsupported/Eigen/Splines>
@@ -301,7 +300,21 @@ void SolverNlopt::generateAStarGuess()
   std::vector<Eigen::Vector3d> q;
   std::vector<Eigen::Vector3d> n;
   std::vector<double> d;
+  using Clock = std::chrono::steady_clock;
+  const auto search_budget = std::chrono::duration<double>(kappa_ * max_runtime_);
+  const auto deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(search_budget);
   bool is_feasible = octopusSolver_->run(q, n, d);
+  if (Clock::now() < deadline && !isFeasible(q, n, d))
+  {
+    const auto check = [this](const auto& points, const auto& normals, const auto& offsets) {
+      return isFeasible(points, normals, offsets);
+    };
+    if (octopusSolver_->chooseFeasibleAlternative(q, n, d, check, deadline))
+    {
+      is_feasible = true;
+      std::clog << "[NL] Using a constraint-feasible alternative from the same A* search" << std::endl;
+    }
+  }
 
   num_of_LPs_run_ = octopusSolver_->getNumOfLPsRun();
   // std::cout << "After Running solved, n= " << std::endl;
@@ -311,11 +324,11 @@ void SolverNlopt::generateAStarGuess()
 
   if (is_feasible)
   {
-    ROS_INFO_STREAM("[NL] A* found a feasible solution!");
+    std::clog << "[NL] A* found a feasible solution!" << std::endl;
   }
   else
   {
-    ROS_ERROR_STREAM("[NL] A* didn't find a feasible solution!");
+    std::cerr << "[NL] A* didn't find a feasible solution!" << std::endl;
   }
 
   if (is_feasible == true || (is_feasible == false && allow_infeasible_guess_ == true))
@@ -324,7 +337,7 @@ void SolverNlopt::generateAStarGuess()
     n_guess_ = n;
     d_guess_ = d;
 
-    ROS_INFO_STREAM("[NL] Using the A* guess");
+    std::clog << "[NL] Using the A* guess" << std::endl;
   }
   else
   {
@@ -558,13 +571,13 @@ bool SolverNlopt::isFeasible(const T x)
 bool SolverNlopt::isFeasible(const std::vector<Eigen::Vector3d> &q, const std::vector<Eigen::Vector3d> &n,
                              const std::vector<double> &d)
 {
-  double constraints[num_of_constraints_];
-  computeConstraints(0, constraints, num_of_variables_, nullptr, q, n, d);
+  std::vector<double> constraints(num_of_constraints_);
+  computeConstraints(0, constraints.data(), num_of_variables_, nullptr, q, n, d);
 
   // std::cout << "The Infeasible Constraints are these ones:\n";
   for (int i = 0; i < num_of_constraints_; i++)
   {
-    if (constraints[i] > epsilon_tol_constraints_)  // constraint is not satisfied yet
+    if (!std::isfinite(constraints[i]) || constraints[i] > epsilon_tol_constraints_)  // constraint is not satisfied yet
     {
       return false;
       // std::cout << std::setprecision(5) << "Constraint " << i << " = " << constraints_[i] << std::endl;
@@ -1801,6 +1814,7 @@ bool SolverNlopt::optimize()
     return false;
   }
 
+  initializeNumOfConstraints();
   generateAStarGuess();
 
   // https://nlopt.readthedocs.io/en/latest/NLopt_Algorithms/#augmented-lagrangian-algorithm
@@ -1829,7 +1843,6 @@ bool SolverNlopt::optimize()
                                                          // in seconds. Negative --> don't use this criterion
 
   // opt.set_maxtime(max_runtime_);
-  initializeNumOfConstraints();
 
   // see https://github.com/stevengj/nlopt/issues/168
   std::vector<double> tol_constraints;
@@ -1939,7 +1952,7 @@ bool SolverNlopt::optimize()
 
   if (failed)
   {
-    ROS_ERROR_STREAM("[NL] Failed, code=" << getResultCode(result));
+    std::cerr << "[NL] Failed, code=" << getResultCode(result) << std::endl;
 
     printf("[NL] nlopt failed or maximum time was reached!\n");
 
@@ -1952,7 +1965,7 @@ bool SolverNlopt::optimize()
   }
   else if (optimal)
   {
-    ROS_INFO_STREAM("[NL] Optimal, code=" << getResultCode(result));
+    std::clog << "[NL] Optimal, code=" << getResultCode(result) << std::endl;
 
     std::cout << on_green << bold << "[NL] Optimal Solution found in" << opt_timer_ << reset << std::endl;
     x2qnd(x_, q, n, d);
@@ -1972,7 +1985,7 @@ bool SolverNlopt::optimize()
   }
   else if (feasible_but_not_optimal)
   {
-    ROS_INFO_STREAM("[NL] Feasible, code=" << getResultCode(result));
+    std::clog << "[NL] Feasible, code=" << getResultCode(result) << std::endl;
 
     std::cout << on_green << bold << "[NL] Feasible Solution found" << opt_timer_ << reset << std::endl;
     x2qnd(best_feasible_sol_so_far_, q, n, d);  // was

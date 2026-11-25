@@ -1,0 +1,9 @@
+builtin_interfaces/Time valid_from
+geometry_msgs/Point position
+geometry_msgs/Vector3 velocity
+geometry_msgs/Vector3 acceleration
+geometry_msgs/Point target
+---
+bool success
+string reason
+mader_msgs/PieceWisePolTraj trajectory
